@@ -1,0 +1,122 @@
+%-----------------------------------------------
+%file name：EKF_SOC
+%File Description: Based on Extended Kalman Lithium Battery Thevenin Model SOC estimation
+%Time：Nov.6.2018
+%editor：Wanglu
+%-------------------Detlab------------------
+function Thevenin_EKF_SOC
+close all;
+clc; 
+tic; 
+%% ---------------[Initialization parameters]-----------------
+X=[1;0];                    % Standard system initial value [SOC; polarization voltage]
+P0=[0.1 0;0 0.1];           %  State error covariance initial value
+
+Q = 1e-5;                    %  Process noise
+
+R = 5e-4;                    %  Observation noise
+
+UL(1,1)=0;
+i=50;                       %  Discharge current, constant current
+b=0.98;                     %  Discharge efficiency
+Q0=50*3600;                 %   Total battery capacity
+t_smpl=1;                   %，2s Sampling time, 2s
+N=3600/t_smpl;              %  Suppose 1 hour is finished
+
+error(1,1)=0;
+%% ----------------[Simulated actual value]--------
+for t=2:N 
+    SOC = X(1,t-1);
+    R_int = 0.00573 - 0.03427*SOC^1 + 0.1455*SOC^2 - 0.32647*SOC^3 ...
+            + 0.41465*SOC^4 - 0.28992*SOC^5 + 0.09353*SOC^6 - 0.00634*SOC^7;                   %  Ohmic internal resistance
+    Rp = 0.01513 - 0.18008*SOC^1 + 1.05147*SOC^2 - 3.27616*SOC^3 ...
+         + 5.79793*SOC^4 - 5.81819*SOC^5 + 3.08032*SOC^6 - 0.66827*SOC^7;                      %  Polarized capacitance
+    Cp = 47718.90713 - 1.00583E6*SOC^1 + 9.2653E6*SOC^2 - 3.91088E7*SOC^3 ...
+        + 8.85892E7*SOC^4 - 1.11014E8*SOC^5 + 7.22811E7*SOC^6 - 1.90336E7*SOC^7;               %  Polarization resistance
+    Tao = Rp*Cp;                   %，"τ"  Time constant, "τ"
+    % ----------------[A matrix, state transition]--------
+    A1 = 1;
+    A2 = exp(-t_smpl/Tao);
+    A = [A1 0;0 A2];
+    % ----------------[B matrix, input control]--------
+    B1 = -t_smpl*b/Q0;
+    B2 = Rp*(1-exp(-t_smpl/Tao));
+    B = [B1;B2];
+   
+    X(:,t)=A*X(:,t-1)+B*i+sqrt(Q)*randn(2,1);           %   State equation, real value simulation
+    SOC = X(1,t);
+    Uoc= -23.60229*SOC^7 + 141.34077*SOC^6 - 314.92282*SOC^5 ...
+              + 345.34531*SOC^4 - 200.15462*SOC^3 ...
+              + 60.21383*SOC^2 - 7.88447*SOC+3.2377;    %  Fitting the relationship between open circuit voltage and SOC
+    Up = X(2,t);    
+    UL(1,t)=Uoc-Up-i*R_int+sqrt(R)*randn;      %  Simulate actual voltage and current
+end
+%% ---------------Kalman Filter algorithm ------------------
+X_update=[0.9;0];
+X_predict=[0;0];
+for t=2:N
+    
+    SOC = X_update(1,t-1);
+    R_int = 0.00573 - 0.03427*SOC^1 + 0.1455*SOC^2 - 0.32647*SOC^3 ...
+            + 0.41465*SOC^4 - 0.28992*SOC^5 + 0.09353*SOC^6 - 0.00634*SOC^7;                   %  Ohmic internal resistance
+    Rp = 0.01513 - 0.18008*SOC^1 + 1.05147*SOC^2 - 3.27616*SOC^3 ...
+         + 5.79793*SOC^4 - 5.81819*SOC^5 + 3.08032*SOC^6 - 0.66827*SOC^7;                      %  Polarized capacitance
+    Cp = 47718.90713 - 1.00583E6*SOC^1 + 9.2653E6*SOC^2 - 3.91088E7*SOC^3 ...
+        + 8.85892E7*SOC^4 - 1.11014E8*SOC^5 + 7.22811E7*SOC^6 - 1.90336E7*SOC^7;               % Polarization resistance
+    Tao = Rp*Cp;                   % Time constant -τ
+    % ----------------[A matrix, state transition]--------
+    A1 = 1;
+    A2 = exp(-t_smpl/Tao);
+    A = [A1 0;0 A2];
+    % ----------------[B matrix, input control]--------
+    B1 = -t_smpl*b/Q0;
+    B2 = Rp*(1-exp(-t_smpl/Tao));
+    B = [B1;B2];
+%% ---------------[prediction]--------------    
+    X_predict(:,t)=A*X_update(:,t-1)+B*i; % [Predicting the state quantity at that time
+                                                                                             from the state quantity at the previous moment,
+                                                                                             including SOC, polarization voltage value]
+    SOC_predict = X_predict(1,t);
+    Up_predict = X_predict(2,t);
+    Uoc= -23.60229*SOC_predict^7 + 141.34077*SOC_predict^6 - 314.92282*SOC_predict^5 ...
+              + 345.34531*SOC_predict^4 - 200.15462*SOC_predict^3 ...
+              + 60.21383*SOC_predict^2 - 7.88447*SOC_predict+3.2377173;
+   VL=Uoc-Up_predict-i*R_int;       %  Predicted voltage and current
+
+   P1=A*P0*A'+ [Q 0;0 Q];                               % variance
+    %% ---------------[C matrix]------------
+    C1=-23.60229*7*SOC_predict^6 + 141.34077*6*SOC_predict^5 - 314.92282*5*SOC_predict^4 ...
+              + 345.34531*4*SOC_predict^3 - 200.15462*3*SOC_predict^2 ...
+              + 60.21383*2*SOC_predict - 7.88447;
+    C=[C1 -1];
+    %% ---------------[Update]-------------     
+    K=P1*C'/(C*P1*C'+ R);                                  % Gain
+
+    X_update(:,t)=X_predict(:,t)+K*(UL(1,t)-VL);     %  Get an estimate
+
+    P0=P1-K*C*P1;
+    
+    error(:,t)=X_update(1,t)-X(1,t);                   % Filtered error
+end 
+
+%% ----------------[Drawing]--------------
+t=1:N;
+
+figure;
+subplot(2,1,1)
+plot(t,X_update(1,:),'.',t,X(1,:),'g');
+grid on;
+legend('Predictive value','actual value');
+xlabel('t(s)');
+ylabel('SOC/100%');
+
+subplot(2,1,2)
+plot(t,error(1,:));
+grid on;
+legend('EKalman Filter-error');
+xlabel(' t(s)');
+ylabel('error/100%');
+
+toc;      %  Calculate simulation program run time
+end
+
